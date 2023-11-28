@@ -1,0 +1,1 @@
+C:\Users\lucag\Downloads\opencv\build\x64\vc15\bin\opencv_createsamples.exe -img dart.bmp -vec dart.vec  -w 20 -h 20 -num 5000 -maxidev 80 -maxxangle 0.8 -maxyangle 0.8 -maxzangle 0.2
