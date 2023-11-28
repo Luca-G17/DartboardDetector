@@ -1,0 +1,17 @@
+Stage 0:
+POS count : consumed   500 : 500
+NEG count : acceptanceRatio    500 : 1
+TPR: 1
+FPR: 0.002
+
+Stage 1:
+POS count : consumed   500 : 500
+NEG count : acceptanceRatio    500 : 0.0603282
+TPR: 1
+FPR: 0.00012064
+
+Stage 2:500
+POS count : consumed   500 : 500
+NEG count : acceptanceRatio    500 : 0.00877532
+TPR: 1
+FPR: 0.00001755064
