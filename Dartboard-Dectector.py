@@ -10,6 +10,18 @@ args = parser.parse_args()
 
 cascade_name = "Dartboardcascade/cascade.xml"
 
+def IoUScore(b0, b1):
+    # box = (x, y, w, h)
+    # Area of Overlap / Area of Union
+    minx = min(b0[0], b1[0])
+    maxx = max(b0[0] + b0[2], b1[0] + b1[2])
+    miny = min(b0[1], b1[1])
+    maxy = max(b0[1] + b0[3], b1[1] + b1[3])
+
+    overlap = (maxx - minx) * (maxy - miny) 
+
+
+
 def detectAndDisplay(frame, truths, imageN):
 
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -32,15 +44,18 @@ def detectAndDisplay(frame, truths, imageN):
         thickness = 2
         frame = cv2.rectangle(frame, start_point, end_point, colour, thickness)
 
+
 def readGroundTruths(filename):
     boxes = []
     with open(filename, "r") as file:
-        box = file.readline().split(',')
-        boxTuple = (int(box[1]), int(box[2]), int(box[3]), int(box[4]))
-        if len(boxes) <= int(box[0]):
-            boxes.append([boxTuple])
-        else:
-            boxes[int(box[0])].append(boxTuple)
+        lines = file.readlines()
+        for line in lines:
+            box = line.split(',')
+            boxTuple = (int(box[1]), int(box[2]), int(box[3]), int(box[4]))
+            if len(boxes) <= int(box[0]):
+                boxes.append([boxTuple])
+            else:
+                boxes[int(box[0])].append(boxTuple)
     return boxes
 
 imageName = args.name
@@ -63,3 +78,26 @@ imageNo = int((imageName.split('dart')[1]).split('.jpg')[0])
 detectAndDisplay(frame, ground_truths, imageNo)
 
 cv2.imwrite("detected.jpg", frame)
+
+# TP = True Positive, FP = False Positives, FN = False Negatives
+# Use a thresholded IoU for classification
+# TP, FP, FN
+# F_1 = 2TP / (2TP + FP + FN)
+#
+# For each 'detected' dartboard det
+# {
+# found = false
+# For each ground truth dartboard (dart, located)
+# {
+# if (IoU(det, dart) > T):
+#   TP++
+#   remove det from list
+#   located = true
+#   found = true
+# }
+# if !found:
+#   FP++
+# }
+# for each ground truth dartboard (dart, located)
+# if (!located)
+#   FN++

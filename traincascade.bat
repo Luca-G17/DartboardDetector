@@ -1,1 +1,0 @@
-C:\Users\lucag\Downloads\opencv\build\x64\vc15\bin\opencv_traincascade.exe -data Dartboardcascade -vec dart.vec -bg negatives.dat -numPos 5000 -numNeg 500 -numStages 3 -maxDepth 1 -w 20 -h 20 -minHitRate 0.999  -maxFalseAlarmRate 0.05 -mode ALL
