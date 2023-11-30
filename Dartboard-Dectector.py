@@ -4,6 +4,7 @@ import os
 import sys
 import argparse
 import math
+import random
 
 parser = argparse.ArgumentParser(description='DartBoard detection')
 parser.add_argument('-viola_jones', '-v', action='store_true')
@@ -85,6 +86,144 @@ def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T):
                     H[y + y_delta][x + x_delta][r_a][r_b] += 1
                     H[y - y_delta][x - x_delta][r_a][r_b] += 1  
 
+def LineLineIntersection(a0, b0, c0, a1, b1, c1):
+    determinant = (a0 * b1) - (a1 * b0)
+    if (determinant == 0):
+        return None
+    else:
+        x = ((c0 * b1) + (c1 * b0)) / determinant
+        y = ((a0 * c1) + (a1 * c0)) / determinant
+        return np.array([x, y])
+
+def TwoDLineIntersectionFromPoints(A, B, C, D):
+    a0 = B[1] - A[1]
+    b0 = A[0] - B[0]
+    c0 = (a0 * A[0]) + (b0 * A[1])
+
+    a1 = D[1] - C[1]
+    b1 = C[0] - D[0]
+    c1 = (a1 * C[0]) + (b1 * C[1])
+    return LineLineIntersection(a0, b0, c0, a1, b1, c1)
+
+# y=mx+c
+def TwoDLineIntersectionFromGradient(m0, c0, m1, c1):
+    # ax+by=c
+    a0 = 1
+    b0 = 1 / m0
+    c0 = c0 / m0
+
+    a1 = 1
+    b1 = 1 / m1
+    c1 = c1 / m1
+    return LineLineIntersection(a0, b0, c0, a1, b1, c1)
+
+def PointAndAngleToLine(p, theta):
+    m = math.tan(theta)
+    c = p[1] - (m * p[0])
+    return [m, c]
+
+def MidPoint(X1, X2):
+    return (X1 + X2) / float(2.0)
+
+def ThreePointsToEllipseCentre(p0, a0, p1, a1, p2, a2):
+    # Tangent lines = T1, T2, T3
+    T1 = PointAndAngleToLine(p0, a0 + (math.pi / 2))
+    T2 = PointAndAngleToLine(p1, a1 + (math.pi / 2))
+    T3 = PointAndAngleToLine(p2, a2 + (math.pi / 2))
+    T12 = TwoDLineIntersectionFromGradient(T1[0], T1[1], T2[0], T2[1])
+    T23 = TwoDLineIntersectionFromGradient(T2[0], T2[1], T3[0], T3[1])
+    if (T12 is None or T23 is None):
+        return None
+    M12 = MidPoint(p0, p1)
+    M23 = MidPoint(p1, p2)
+    return TwoDLineIntersectionFromPoints(T12, M12, T23, M23)
+
+def SolveQuadratic(a, b, c, plus=True):
+    if (a == 0):
+        return None
+    discriminant = (b ** 2) - (4 * a * c)
+    if (discriminant < 0):
+        return None
+    
+    return (-b + math.sqrt(discriminant)) / (2 * a)
+
+def ThreePointsToEllipseRadii(X0, X1, X2, centre):
+    X0 = X0 - centre
+    X1 = X1 - centre
+    X2 = X2 - centre
+    P0 = np.array([X0[0] ** 2, 2 * X0[0] * X0[1], X0[1] ** 2])
+    P1 = np.array([X1[0] ** 2, 2 * X1[0] * X1[1], X1[1] ** 2])
+    P2 = np.array([X2[0] ** 2, 2 * X2[0] * X2[1], X2[1] ** 2])
+    A = np.vstack((P0, P1, P2))
+    if (np.linalg.matrix_rank(A) != A.shape[0]):
+        return None
+    Ainv = np.linalg.inv(A)
+    [alpha, beta, gamma] = np.sum(Ainv, axis=1)
+    x = SolveQuadratic(alpha, -2 * beta * centre[1], gamma)
+    y = SolveQuadratic(gamma, -2 * beta * centre[0], alpha)
+    if (x == None or y == None):
+        return None
+    return np.array([abs(centre[0] - x), abs(centre[1] - y)])
+
+class Ellipse:
+    def __init__(self, indices, radii, centre):
+        self.indices = indices
+        self.radii = radii
+        self.centre = centre
+        self.score = 0
+        self.n = 1
+
+    def Average(self, c, r, indices):
+        self.radii = (r + (self.n * self.radii)) / (self.n + 1)
+        self.centre = (c + (self.n * self.centre)) / (self.n + 1)
+        self.n += 1
+        self.indices.extend(indices)
+
+def EllipseSimiliarity(c0, r0, c1, r1):
+    rDiff = (float(r0[0]) / r0[1]) - (float(r1[0]) / r1[1])
+    cDiff2 = np.dot(c0 - c1, c0 - c1)
+
+    # 10 Pixel Radius for centre
+    # 0.1 Difference in radii   
+    return cDiff2 <= 10 and rDiff <= 0.1
+
+def randomized_hough_ellipse(grad_direction, thresholded_grad_mag, ellipses_n=20, iters=1000):
+    # Accumulator:
+    # For each ellipse, store a list of generating points indices
+    # semi-major/minor axis, centre coords   
+    ellipses = []
+    while (len(thresholded_grad_mag) > 3 and len(ellipses) < ellipses_n):
+        accumulator = []
+        for i in range(iters):
+            # Find potential ellipse
+            pointIndices = random.sample(range(len(thresholded_grad_mag)), 3)
+            # Find centre coords
+            points = np.array(thresholded_grad_mag[pointIndices])
+            angles = []
+            for point in points:
+                angles.append(grad_direction[point[0]][point[1]])
+            centre = ThreePointsToEllipseCentre(points[0], angles[0], points[1], angles[1], points[2], angles[2])
+            if centre is None:
+                continue
+
+            radii = ThreePointsToEllipseRadii(points[0], points[1], points[2], centre)
+            if radii is None:
+                continue
+            # Measure similarity between this ellipse and all the other ellipses in the accumulator
+            found = False
+            for ellipse in accumulator:
+                if EllipseSimiliarity(centre, radii, ellipse.centre, ellipse.radii):
+                    found = True
+                    ellipse.score += 1
+                    #ellipse.Average(centre, radii, pointIndices)
+            if (found == False):
+                accumulator.append(Ellipse(pointIndices, radii, centre))
+        if (len(accumulator) > 0):
+            ellipse = max(accumulator, key=lambda e:e.score)
+            ellipses.append(ellipse)
+            thresholded_grad_mag = np.delete(thresholded_grad_mag, ellipse.indices, 0)
+        
+    return [(e.centre[0], e.centre[1], e.radii[0], e.radii[1]) for e in ellipses]
 
 def test_hough_circles(image):
     frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -99,9 +238,11 @@ def test_hough_ellipses(image):
     frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     frame_gray = cv2.equalizeHist(frame_gray)
     magnitude, direction = sobel_information(frame_gray)
-    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 10)
-    for (x, y, r_a, r_b, angle) in ellipses:
-        image = cv2.ellipse(image, (x, y), (r_a, r_b), angle, 0, 360, (0, 0, 255), 1)
+    # ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 10)
+    ellipses = randomized_hough_ellipse(direction, thresholded_pixels(magnitude, 200))
+    for (x, y, r_a, r_b) in ellipses:
+        print(f"Ellipse: ({x}, {y}), ({r_a}, {r_b})")
+        image = cv2.ellipse(image, (int(x), int(y)), (int(r_a), int(r_b)), 0, 0, 360, (0, 0, 255), 1)
     cv2.imwrite("ellipses_detected.jpg", image)
 
 def IoUScore(b0, b1):
@@ -253,25 +394,3 @@ elif (args.name != ""):
     #test_hough_circles(image)
 else:
     ClassifyMultiplePhotos((0, 15))
-# TP = True Positive, FP = False Positives, FN = False Negatives
-# Use a thresholded IoU for classification
-# TP, FP, FN
-# F_1 = 2TP / (2TP + FP + FN)
-#
-# For each 'detected' dartboard det
-# {
-# found = false
-# For each ground truth dartboard (dart, located)
-# {
-# if (IoU(det, dart) > T):
-#   TP++
-#   remove det from list
-#   located = true
-#   found = true
-# }
-# if !found:
-#   FP++
-# }
-# for each ground truth dartboard (dart, located)
-# if (!located)
-#   FN++
