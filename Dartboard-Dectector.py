@@ -3,12 +3,106 @@ import cv2
 import os
 import sys
 import argparse
+import math
 
 parser = argparse.ArgumentParser(description='DartBoard detection')
+parser.add_argument('-viola_jones', '-v', action='store_true')
 parser.add_argument('-name', '-n', type=str, default='')
 args = parser.parse_args()
 
 cascade_name = "Dartboardcascade/cascade.xml"
+
+def convolution(image, kernel):
+    kernel = np.flipud(np.fliplr(kernel))
+    padding = math.floor(kernel.shape[0] / 2)
+    kh, kw, = kernel.shape
+    h = image.shape[0]
+    w = image.shape[1]
+    outputX = w + 2 * padding
+    outputY = h + 2 * padding
+    output = np.zeros((outputY, outputX))
+    paddedImage = np.zeros((outputY, outputX))
+    paddedImage[int(padding):int(-1 * padding), int(padding):int(-1 * padding)] = image
+    for i in range(outputY - kh + 1):
+        for f in range(outputX - kw + 1):
+            v = np.sum(np.multiply(kernel, paddedImage[i:i+kh,f:f+kw]))
+            output[i][f] = v
+
+    return output[:h, :w]
+
+def gradient_x(image):
+    kernel = np.array([
+        [-1, 0, 1],
+        [-2, 0, 2],
+        [-1, 0, 1]
+    ])
+    return convolution(image, kernel)
+
+def gradient_y(image):
+    kernel = np.array([
+        [-1, -2, -1],
+        [0, 0, 0],
+        [1, 2, 1]
+    ])
+    return convolution(image, kernel)
+
+def sobel_information(image):
+    grad_x = gradient_x(image)
+    grad_y = gradient_y(image)
+    grad_magnitude = np.sqrt(np.power(grad_x, 2) + np.power(grad_y, 2))
+    grad_direction = np.arctan2(grad_y, grad_x + 1e-10)
+    return (grad_magnitude, grad_direction)
+
+def thresholded_pixels(image, T):
+    return np.argwhere(image > T)
+
+def hough_circles(grad_direction, thresholded_grad_mag, shape, T):
+    height, width = shape
+    max_radius = 100
+    H = np.zeros((height + max_radius, width + max_radius, max_radius))
+    for pixel in thresholded_grad_mag:
+        (y, x) = pixel
+        for r in range(10, max_radius):
+            x_comp = int(r * math.cos(grad_direction[y][x]))
+            y_comp = int(r * math.sin(grad_direction[y][x]))
+            H[y + y_comp][x + x_comp][r] += 1
+            H[y - y_comp][x - x_comp][r] += 1  
+    return np.argwhere(H > T)
+
+def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T):
+    height, width = shape
+    max_major_axis = max_minor_axis = 100
+    H = np.zeros((height + max_major_axis, width + max_major_axis, max_major_axis, max_major_axis))
+    for pixel in thresholded_grad_mag:
+        (y, x) = pixel
+        for r_a in range(10, max_major_axis):
+            for r_b in range(10, r_a): # Semi-minor axis is always less than the semi-major axis
+                for theta in range(0, 180):
+                    alpha = grad_direction[y][x]
+                    theta = theta * math.pi / 180.0
+                    x_delta = int((r_a * math.cos(alpha) * math.cos(theta)) - (r_b * math.sin(alpha) * math.sin(theta)))
+                    y_delta = int((r_a * math.cos(alpha) * math.sin(theta)) + (r_b * math.sin(alpha) * math.cos(theta)))
+                    H[y + y_delta][x + x_delta][r_a][r_b] += 1
+                    H[y - y_delta][x - x_delta][r_a][r_b] += 1  
+
+
+def test_hough_circles(image):
+    frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    frame_gray = cv2.equalizeHist(frame_gray)
+    magnitude, direction = sobel_information(frame_gray)
+    circles = hough_circles(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 10)
+    for (y, x, r) in circles:
+        image = cv2.circle(image, (x, y), r, (0, 0, 255), 1)
+    cv2.imwrite("circles_detected.jpg", image)
+
+def test_hough_ellipses(image):
+    frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    frame_gray = cv2.equalizeHist(frame_gray)
+    magnitude, direction = sobel_information(frame_gray)
+    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 10)
+    for (x, y, r_a, r_b, angle) in ellipses:
+        image = cv2.ellipse(image, (x, y), (r_a, r_b), angle, 0, 360, (0, 0, 255), 1)
+    cv2.imwrite("ellipses_detected.jpg", image)
 
 def IoUScore(b0, b1):
     # box = (x, y, w, h)
@@ -79,7 +173,6 @@ def PrettyPrintScore(scores, imageN):
     print("F1 Score        | {:.3f}".format(scores["F1"]))
 
 def detectAndDisplay(model, frame, truths, imageN):
-
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     frame_gray = cv2.equalizeHist(frame_gray)
 
@@ -152,8 +245,12 @@ def ClassifySinglePhoto(filepath):
     cv2.imwrite(f"Detected/{filename}", frame)
 
 imageName = args.name
-if (args.name != ""):
+if (args.name != "" and args.viola_jones):
     ClassifySinglePhoto(imageName)
+elif (args.name != ""):
+    image = cv2.imread(imageName, 1)
+    test_hough_ellipses(image)
+    #test_hough_circles(image)
 else:
     ClassifyMultiplePhotos((0, 15))
 # TP = True Positive, FP = False Positives, FN = False Negatives
