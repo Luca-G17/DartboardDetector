@@ -51,6 +51,7 @@ def sobel_information(image):
     grad_x = gradient_x(image)
     grad_y = gradient_y(image)
     grad_magnitude = np.sqrt(np.power(grad_x, 2) + np.power(grad_y, 2))
+    cv2.imwrite("grad_magnitude.jpg", (grad_magnitude > 240) * 255)
     grad_direction = np.arctan2(grad_y, grad_x + 1e-10)
     return (grad_magnitude, grad_direction)
 
@@ -59,7 +60,7 @@ def thresholded_pixels(image, T):
 
 def hough_circles(grad_direction, thresholded_grad_mag, shape, T):
     height, width = shape
-    max_radius = 100
+    max_radius = 50
     H = np.zeros((height + max_radius, width + max_radius, max_radius))
     for pixel in thresholded_grad_mag:
         (y, x) = pixel
@@ -70,21 +71,81 @@ def hough_circles(grad_direction, thresholded_grad_mag, shape, T):
             H[y - y_comp][x - x_comp][r] += 1  
     return np.argwhere(H > T)
 
-def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T):
+def EllipseSimiliarity(c0, r0, c1, r1):
+    rDiff = (float(r0[0]) / r0[1]) - (float(r1[0]) / r1[1])
+    cDiff2 = np.dot(c0 - c1, c0 - c1)
+
+    # 10 Pixel Radius for centre
+    # 0.1 Difference in radii   
+    return cDiff2 <= 10 and rDiff <= 0.1
+
+def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T, radii_range):
     height, width = shape
-    max_major_axis = max_minor_axis = 100
-    H = np.zeros((height + max_major_axis, width + max_major_axis, max_major_axis, max_major_axis))
+    min_radius, max_radius = radii_range
+    H = np.zeros((height + max_radius, width + max_radius, max_radius - min_radius, max_radius - min_radius))
     for pixel in thresholded_grad_mag:
         (y, x) = pixel
-        for r_a in range(10, max_major_axis):
-            for r_b in range(10, r_a): # Semi-minor axis is always less than the semi-major axis
-                for theta in range(0, 180):
-                    alpha = grad_direction[y][x]
-                    theta = theta * math.pi / 180.0
-                    x_delta = int((r_a * math.cos(alpha) * math.cos(theta)) - (r_b * math.sin(alpha) * math.sin(theta)))
-                    y_delta = int((r_a * math.cos(alpha) * math.sin(theta)) + (r_b * math.sin(alpha) * math.cos(theta)))
-                    H[y + y_delta][x + x_delta][r_a][r_b] += 1
-                    H[y - y_delta][x - x_delta][r_a][r_b] += 1  
+        for r_a in range(0, max_radius - min_radius):
+            for r_b in range(0, max_radius - min_radius): # Semi-minor axis is always less than the semi-major axis
+                alpha = grad_direction[y][x]
+                x_delta = int(r_a * math.cos(alpha))
+                y_delta = int(r_b * math.sin(alpha))
+                H[y + y_delta][x + x_delta][r_a][r_b] += 1
+                H[y - y_delta][x - x_delta][r_a][r_b] += 1
+
+    return np.argwhere(H > T)
+
+def semi_minor_axis(p1, p2, p3, a, d2):
+    f2 = np.dot(p3 - p2, p3 - p2)
+    a2 = a ** 2
+    denom = (4 * a2 * float(d2))
+    if (denom == 0):
+        return None 
+    cos_t2 = ((a2 + d2 - f2) ** 2) / denom
+    sin_t2 = 1 - cos_t2
+    denom = (a2 * -d2 * cos_t2)
+    if (denom == 0):
+        return None
+    b2 = a2 * d2 * sin_t2 / denom
+    if (b2 <= 0):
+        return None 
+    return math.sqrt(b2) 
+    
+def better_hough_ellipse(grad_direction, thresholded_grad_map, shape, T):
+    accumulator = np.full(100, 0)
+    max_major_axis = 100
+    ellipses = []
+    print(len(thresholded_grad_map))
+    for p1 in thresholded_grad_map:
+        print(p1)
+        (y1, x1) = p1
+        for p2 in thresholded_grad_map:
+            (y2, x2) = p2
+            if (np.array_equal(p1, p2)):
+                continue
+            dist2 = np.dot(p1 - p2, p1 - p2)
+            if (dist2 > 200 ** 2):
+                continue
+            centre_x = (x1 + x2) / 2
+            centre_y = (y1 + y2) / 2
+            centre = np.array([centre_y, centre_x])
+            major_axis = math.sqrt(dist2) / 2
+            angle = np.arctan2((y2 - y1), (x2 - x1))
+            for p3 in thresholded_grad_map:
+                (y, x) = p3
+                if (np.array_equal(p3, p1) or np.array_equal(p3, p2)):
+                    continue
+                dist2 = np.dot(p3 - centre, p3 - centre)
+                if (dist2 > max_major_axis ** 2):
+                    continue
+                b = semi_minor_axis(p1, p2, p3, major_axis, dist2)
+                if b is None:
+                    continue
+                accumulator[int(b)] += 1
+            voted = np.argmax(accumulator)
+            if (accumulator[voted] > T):
+                ellipses.append((centre_y, centre_x, major_axis, voted, angle))
+    return ellipses
 
 def LineLineIntersection(a0, b0, c0, a1, b1, c1):
     determinant = (a0 * b1) - (a1 * b0)
@@ -179,29 +240,31 @@ class Ellipse:
         self.n += 1
         self.indices.extend(indices)
 
-def EllipseSimiliarity(c0, r0, c1, r1):
-    rDiff = (float(r0[0]) / r0[1]) - (float(r1[0]) / r1[1])
-    cDiff2 = np.dot(c0 - c1, c0 - c1)
+def RandomWithinRange(i0, ps, T=50):
+    i = random.randint(0, len(ps) - 1)
+    while (np.dot(ps[i0] - ps[i], ps[i0] - ps[i]) > T ** 2 or i == i0):
+        i = random.randint(0, len(ps) - 1)
 
-    # 10 Pixel Radius for centre
-    # 0.1 Difference in radii   
-    return cDiff2 <= 10 and rDiff <= 0.1
-
+    i2 = random.randint(0, len(ps) - 1)
+    while (np.dot(ps[i0] - ps[i2], ps[i0] - ps[i2]) > T ** 2 or i2 == i0 or i2 == i):
+        i2 = random.randint(0, len(ps) - 1)
+    return np.array([i0, i, i2])
+                
 def randomized_hough_ellipse(grad_direction, thresholded_grad_mag, ellipses_n=20, iters=1000):
     # Accumulator:
     # For each ellipse, store a list of generating points indices
-    # semi-major/minor axis, centre coords   
+    # semi-major/minor axis, centre coords
     ellipses = []
     while (len(thresholded_grad_mag) > 3 and len(ellipses) < ellipses_n):
         accumulator = []
         for i in range(iters):
             # Find potential ellipse
-            pointIndices = random.sample(range(len(thresholded_grad_mag)), 3)
+            pointIndices = RandomWithinRange(random.randint(0, len(thresholded_grad_mag) - 1), thresholded_grad_mag)
             # Find centre coords
-            points = np.array(thresholded_grad_mag[pointIndices])
+            points = np.fliplr(np.array(thresholded_grad_mag[pointIndices]))
             angles = []
             for point in points:
-                angles.append(grad_direction[point[0]][point[1]])
+                angles.append(grad_direction[point[1]][point[0]])
             centre = ThreePointsToEllipseCentre(points[0], angles[0], points[1], angles[1], points[2], angles[2])
             if centre is None:
                 continue
@@ -236,13 +299,19 @@ def test_hough_circles(image):
 
 def test_hough_ellipses(image):
     frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    frame_gray = cv2.equalizeHist(frame_gray)
     magnitude, direction = sobel_information(frame_gray)
-    # ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 10)
-    ellipses = randomized_hough_ellipse(direction, thresholded_pixels(magnitude, 200))
-    for (x, y, r_a, r_b) in ellipses:
+    #ellipses = better_hough_ellipse(direction, thresholded_pixels(magnitude, 250), frame_gray.shape, 10)
+    # ellipses = randomized_hough_ellipse(direction, thresholded_pixels(magnitude, 200))
+    min_radius = 45
+    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 240), frame_gray.shape, 15, (min_radius, 100))
+    centres = np.zeros(frame_gray.shape) + np.array([45, 45])
+    for (y, x, r_a, r_b) in ellipses:
+        centres[y][x] += 30
+    cv2.imwrite("ellipse_centres.jpg", centres)
+            
+    for (y, x, r_a, r_b) in ellipses:
         print(f"Ellipse: ({x}, {y}), ({r_a}, {r_b})")
-        image = cv2.ellipse(image, (int(x), int(y)), (int(r_a), int(r_b)), 0, 0, 360, (0, 0, 255), 1)
+        image = cv2.ellipse(image, (int(x), int(y)), (int(r_a + min_radius), int(r_b + min_radius)), 0, 0, 360, (0, 0, 255), 1)
     cv2.imwrite("ellipses_detected.jpg", image)
 
 def IoUScore(b0, b1):
