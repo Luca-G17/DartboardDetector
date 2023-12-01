@@ -93,7 +93,36 @@ def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T, radii_range):
                 H[y + y_delta][x + x_delta][r_a][r_b] += 1
                 H[y - y_delta][x - x_delta][r_a][r_b] += 1
 
-    return np.argwhere(H > T)
+    es = np.argwhere(H > T)
+    remaining = np.copy(es)
+    averages = []
+    H = (H <= T) * 0
+    cluster_radius = 20
+    while(len(remaining) > 0):
+        average = remaining[0]
+        (ay, ax, ar_a, ar_b) = average
+        average.append(H[ay][ax][ar_a][ar_b])
+
+        removed = [0]
+        for i in range(1, len(remaining)):
+            (ay, ax, ar_a, ar_b, an) = average
+            (y, x, r_a, r_b) = remaining[i]
+            n = H[y][x][r_a][r_b]
+            acoords = np.array([ay, ax])
+            aradii = np.array([ar_a, ar_b])
+            coords = np.array([y, x])
+            radii = np.array([r_a, r_b])
+
+            d2 = np.dot(acoords - coords, acoords - coords)
+            if (d2 < (cluster_radius ** 2)):
+                new_coords = ((acoords * an) + coords) / (an + n)
+                new_radii = ((aradii * an) + radii) / (an + n)
+                average = [new_coords[0], new_coords[1], new_radii[0], new_radii[1], an + n] 
+                removed.append(i)
+        remaining = np.delete(remaining, removed)
+        averages.append(average)
+
+    return averages
 
 def semi_minor_axis(p1, p2, p3, a, d2):
     f2 = np.dot(p3 - p2, p3 - p2)
@@ -303,7 +332,7 @@ def test_hough_ellipses(image):
     #ellipses = better_hough_ellipse(direction, thresholded_pixels(magnitude, 250), frame_gray.shape, 10)
     # ellipses = randomized_hough_ellipse(direction, thresholded_pixels(magnitude, 200))
     min_radius = 45
-    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 240), frame_gray.shape, 7, (min_radius, 100))
+    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 240), frame_gray.shape, 12, (min_radius, 100))
     height, width = frame_gray.shape
     centres = np.zeros((height + min_radius, width + min_radius))
     for (y, x, r_a, r_b) in ellipses:
