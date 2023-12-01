@@ -88,8 +88,8 @@ def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T, radii_range):
         for r_a in range(0, max_radius - min_radius):
             for r_b in range(0, max_radius - min_radius): # Semi-minor axis is always less than the semi-major axis
                 alpha = grad_direction[y][x]
-                x_delta = int(r_a * math.cos(alpha))
-                y_delta = int(r_b * math.sin(alpha))
+                x_delta = int((r_a + min_radius) * math.cos(alpha))
+                y_delta = int((r_b + min_radius) * math.sin(alpha))
                 H[y + y_delta][x + x_delta][r_a][r_b] += 1
                 H[y - y_delta][x - x_delta][r_a][r_b] += 1
 
@@ -303,8 +303,9 @@ def test_hough_ellipses(image):
     #ellipses = better_hough_ellipse(direction, thresholded_pixels(magnitude, 250), frame_gray.shape, 10)
     # ellipses = randomized_hough_ellipse(direction, thresholded_pixels(magnitude, 200))
     min_radius = 45
-    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 240), frame_gray.shape, 15, (min_radius, 100))
-    centres = np.zeros(frame_gray.shape) + np.array([45, 45])
+    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 240), frame_gray.shape, 7, (min_radius, 100))
+    height, width = frame_gray.shape
+    centres = np.zeros((height + min_radius, width + min_radius))
     for (y, x, r_a, r_b) in ellipses:
         centres[y][x] += 30
     cv2.imwrite("ellipse_centres.jpg", centres)
