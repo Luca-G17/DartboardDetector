@@ -51,7 +51,7 @@ def sobel_information(image):
     grad_x = gradient_x(image)
     grad_y = gradient_y(image)
     grad_magnitude = np.sqrt(np.power(grad_x, 2) + np.power(grad_y, 2))
-    cv2.imwrite("grad_magnitude.jpg", (grad_magnitude > 240) * 255)
+    cv2.imwrite("grad_magnitude.jpg", (grad_magnitude > 200) * 255)
     grad_direction = np.arctan2(grad_y, grad_x + 1e-10)
     return (grad_magnitude, grad_direction)
 
@@ -60,16 +60,48 @@ def thresholded_pixels(image, T):
 
 def hough_circles(grad_direction, thresholded_grad_mag, shape, T):
     height, width = shape
-    max_radius = 50
+    max_radius = 150
     H = np.zeros((height + max_radius, width + max_radius, max_radius))
     for pixel in thresholded_grad_mag:
         (y, x) = pixel
-        for r in range(10, max_radius):
+        for r in range(30, max_radius):
             x_comp = int(r * math.cos(grad_direction[y][x]))
             y_comp = int(r * math.sin(grad_direction[y][x]))
             H[y + y_comp][x + x_comp][r] += 1
-            H[y - y_comp][x - x_comp][r] += 1  
-    return np.argwhere(H > T)
+            H[y - y_comp][x - x_comp][r] += 1
+    circles = np.argwhere(H > T)
+    
+    all_circles = np.argwhere(H > 0)
+    hough_space_image = np.zeros((height + max_radius, width + max_radius))
+    for circle in all_circles:
+        (y, x, r) = circle
+        hough_space_image[y][x] += 2
+    cv2.imwrite("circle_H_space.jpg", hough_space_image)
+
+    averages = []
+    cluster_radius = 50
+    while(len(circles) > 0):
+        average = list(circles[0])
+        [ay, ax, ar] = average
+        average.append(H[ay][ax][ar])
+        removed = [0]
+        for i in range(1, len(circles)):
+            (ay, ax, ar, an) = average
+            (y, x, r) = circles[i]
+            n = H[y][x][r]
+            acoords = np.array([ay, ax])
+            coords = np.array([y, x])
+            d2 = np.dot(acoords - coords, acoords - coords)
+            if (d2 < cluster_radius ** 2):
+                new_coords = ((acoords * an) + (coords * n)) / (an + n)
+                new_radius = ((ar * an) + (r * n)) / (an + n)
+                average = [int(new_coords[0]), int(new_coords[1]), int(new_radius), an + n]
+                removed.append(i)
+
+        circles = np.delete(circles, removed, axis=0)
+        averages.append(average)
+    return averages
+
 
 def EllipseSimiliarity(c0, r0, c1, r1):
     rDiff = (float(r0[0]) / r0[1]) - (float(r1[0]) / r1[1])
@@ -83,6 +115,7 @@ def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T, radii_range):
     height, width = shape
     min_radius, max_radius = radii_range
     H = np.zeros((height + max_radius, width + max_radius, max_radius - min_radius, max_radius - min_radius))
+    hough_space_image = np.zeros((height + max_radius, width + max_radius))
     for pixel in thresholded_grad_mag:
         (y, x) = pixel
         for r_a in range(0, max_radius - min_radius):
@@ -92,17 +125,21 @@ def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T, radii_range):
                 y_delta = int((r_b + min_radius) * math.sin(alpha))
                 H[y + y_delta][x + x_delta][r_a][r_b] += 1
                 H[y - y_delta][x - x_delta][r_a][r_b] += 1
-
+                hough_space_image[y + y_delta][x + x_delta] += 0.1
+                hough_space_image[y - y_delta][x - x_delta] += 0.1
+   
     es = np.argwhere(H > T)
+    cv2.imwrite("ellipse_H_space.jpg", hough_space_image)
+
     remaining = np.copy(es)
     averages = []
-    H = (H <= T) * 0
-    cluster_radius = 20
-    while(len(remaining) > 0):
-        average = remaining[0]
-        (ay, ax, ar_a, ar_b) = average
-        average.append(H[ay][ax][ar_a][ar_b])
 
+    cluster_radius = 70
+    print(remaining)
+    while(len(remaining) > 0):
+        average = list(remaining[0])
+        [ay, ax, ar_a, ar_b] = average
+        average.append(H[ay][ax][ar_a][ar_b])
         removed = [0]
         for i in range(1, len(remaining)):
             (ay, ax, ar_a, ar_b, an) = average
@@ -115,213 +152,41 @@ def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T, radii_range):
 
             d2 = np.dot(acoords - coords, acoords - coords)
             if (d2 < (cluster_radius ** 2)):
-                new_coords = ((acoords * an) + coords) / (an + n)
-                new_radii = ((aradii * an) + radii) / (an + n)
-                average = [new_coords[0], new_coords[1], new_radii[0], new_radii[1], an + n] 
+                new_coords = ((acoords * an) + (coords * n)) / (an + n)
+                new_radii = ((aradii * an) + (radii * n)) / (an + n)
+                average = [int(new_coords[0]), int(new_coords[1]), int(new_radii[0]), int(new_radii[1]), an + n] 
                 removed.append(i)
-        remaining = np.delete(remaining, removed)
+        remaining = np.delete(remaining, removed, axis=0)
         averages.append(average)
-
     return averages
 
-def semi_minor_axis(p1, p2, p3, a, d2):
-    f2 = np.dot(p3 - p2, p3 - p2)
-    a2 = a ** 2
-    denom = (4 * a2 * float(d2))
-    if (denom == 0):
-        return None 
-    cos_t2 = ((a2 + d2 - f2) ** 2) / denom
-    sin_t2 = 1 - cos_t2
-    denom = (a2 * -d2 * cos_t2)
-    if (denom == 0):
-        return None
-    b2 = a2 * d2 * sin_t2 / denom
-    if (b2 <= 0):
-        return None 
-    return math.sqrt(b2) 
-    
-def better_hough_ellipse(grad_direction, thresholded_grad_map, shape, T):
-    accumulator = np.full(100, 0)
-    max_major_axis = 100
-    ellipses = []
-    print(len(thresholded_grad_map))
-    for p1 in thresholded_grad_map:
-        print(p1)
-        (y1, x1) = p1
-        for p2 in thresholded_grad_map:
-            (y2, x2) = p2
-            if (np.array_equal(p1, p2)):
-                continue
-            dist2 = np.dot(p1 - p2, p1 - p2)
-            if (dist2 > 200 ** 2):
-                continue
-            centre_x = (x1 + x2) / 2
-            centre_y = (y1 + y2) / 2
-            centre = np.array([centre_y, centre_x])
-            major_axis = math.sqrt(dist2) / 2
-            angle = np.arctan2((y2 - y1), (x2 - x1))
-            for p3 in thresholded_grad_map:
-                (y, x) = p3
-                if (np.array_equal(p3, p1) or np.array_equal(p3, p2)):
-                    continue
-                dist2 = np.dot(p3 - centre, p3 - centre)
-                if (dist2 > max_major_axis ** 2):
-                    continue
-                b = semi_minor_axis(p1, p2, p3, major_axis, dist2)
-                if b is None:
-                    continue
-                accumulator[int(b)] += 1
-            voted = np.argmax(accumulator)
-            if (accumulator[voted] > T):
-                ellipses.append((centre_y, centre_x, major_axis, voted, angle))
-    return ellipses
-
-def LineLineIntersection(a0, b0, c0, a1, b1, c1):
-    determinant = (a0 * b1) - (a1 * b0)
-    if (determinant == 0):
-        return None
-    else:
-        x = ((c0 * b1) + (c1 * b0)) / determinant
-        y = ((a0 * c1) + (a1 * c0)) / determinant
-        return np.array([x, y])
-
-def TwoDLineIntersectionFromPoints(A, B, C, D):
-    a0 = B[1] - A[1]
-    b0 = A[0] - B[0]
-    c0 = (a0 * A[0]) + (b0 * A[1])
-
-    a1 = D[1] - C[1]
-    b1 = C[0] - D[0]
-    c1 = (a1 * C[0]) + (b1 * C[1])
-    return LineLineIntersection(a0, b0, c0, a1, b1, c1)
-
-# y=mx+c
-def TwoDLineIntersectionFromGradient(m0, c0, m1, c1):
-    # ax+by=c
-    a0 = 1
-    b0 = 1 / m0
-    c0 = c0 / m0
-
-    a1 = 1
-    b1 = 1 / m1
-    c1 = c1 / m1
-    return LineLineIntersection(a0, b0, c0, a1, b1, c1)
-
-def PointAndAngleToLine(p, theta):
-    m = math.tan(theta)
-    c = p[1] - (m * p[0])
-    return [m, c]
-
-def MidPoint(X1, X2):
-    return (X1 + X2) / float(2.0)
-
-def ThreePointsToEllipseCentre(p0, a0, p1, a1, p2, a2):
-    # Tangent lines = T1, T2, T3
-    T1 = PointAndAngleToLine(p0, a0 + (math.pi / 2))
-    T2 = PointAndAngleToLine(p1, a1 + (math.pi / 2))
-    T3 = PointAndAngleToLine(p2, a2 + (math.pi / 2))
-    T12 = TwoDLineIntersectionFromGradient(T1[0], T1[1], T2[0], T2[1])
-    T23 = TwoDLineIntersectionFromGradient(T2[0], T2[1], T3[0], T3[1])
-    if (T12 is None or T23 is None):
-        return None
-    M12 = MidPoint(p0, p1)
-    M23 = MidPoint(p1, p2)
-    return TwoDLineIntersectionFromPoints(T12, M12, T23, M23)
-
-def SolveQuadratic(a, b, c, plus=True):
-    if (a == 0):
-        return None
-    discriminant = (b ** 2) - (4 * a * c)
-    if (discriminant < 0):
-        return None
-    
-    return (-b + math.sqrt(discriminant)) / (2 * a)
-
-def ThreePointsToEllipseRadii(X0, X1, X2, centre):
-    X0 = X0 - centre
-    X1 = X1 - centre
-    X2 = X2 - centre
-    P0 = np.array([X0[0] ** 2, 2 * X0[0] * X0[1], X0[1] ** 2])
-    P1 = np.array([X1[0] ** 2, 2 * X1[0] * X1[1], X1[1] ** 2])
-    P2 = np.array([X2[0] ** 2, 2 * X2[0] * X2[1], X2[1] ** 2])
-    A = np.vstack((P0, P1, P2))
-    if (np.linalg.matrix_rank(A) != A.shape[0]):
-        return None
-    Ainv = np.linalg.inv(A)
-    [alpha, beta, gamma] = np.sum(Ainv, axis=1)
-    x = SolveQuadratic(alpha, -2 * beta * centre[1], gamma)
-    y = SolveQuadratic(gamma, -2 * beta * centre[0], alpha)
-    if (x == None or y == None):
-        return None
-    return np.array([abs(centre[0] - x), abs(centre[1] - y)])
-
-class Ellipse:
-    def __init__(self, indices, radii, centre):
-        self.indices = indices
-        self.radii = radii
-        self.centre = centre
-        self.score = 0
-        self.n = 1
-
-    def Average(self, c, r, indices):
-        self.radii = (r + (self.n * self.radii)) / (self.n + 1)
-        self.centre = (c + (self.n * self.centre)) / (self.n + 1)
-        self.n += 1
-        self.indices.extend(indices)
-
-def RandomWithinRange(i0, ps, T=50):
-    i = random.randint(0, len(ps) - 1)
-    while (np.dot(ps[i0] - ps[i], ps[i0] - ps[i]) > T ** 2 or i == i0):
-        i = random.randint(0, len(ps) - 1)
-
-    i2 = random.randint(0, len(ps) - 1)
-    while (np.dot(ps[i0] - ps[i2], ps[i0] - ps[i2]) > T ** 2 or i2 == i0 or i2 == i):
-        i2 = random.randint(0, len(ps) - 1)
-    return np.array([i0, i, i2])
-                
-def randomized_hough_ellipse(grad_direction, thresholded_grad_mag, ellipses_n=20, iters=1000):
-    # Accumulator:
-    # For each ellipse, store a list of generating points indices
-    # semi-major/minor axis, centre coords
-    ellipses = []
-    while (len(thresholded_grad_mag) > 3 and len(ellipses) < ellipses_n):
-        accumulator = []
-        for i in range(iters):
-            # Find potential ellipse
-            pointIndices = RandomWithinRange(random.randint(0, len(thresholded_grad_mag) - 1), thresholded_grad_mag)
-            # Find centre coords
-            points = np.fliplr(np.array(thresholded_grad_mag[pointIndices]))
-            angles = []
-            for point in points:
-                angles.append(grad_direction[point[1]][point[0]])
-            centre = ThreePointsToEllipseCentre(points[0], angles[0], points[1], angles[1], points[2], angles[2])
-            if centre is None:
-                continue
-
-            radii = ThreePointsToEllipseRadii(points[0], points[1], points[2], centre)
-            if radii is None:
-                continue
-            # Measure similarity between this ellipse and all the other ellipses in the accumulator
-            found = False
-            for ellipse in accumulator:
-                if EllipseSimiliarity(centre, radii, ellipse.centre, ellipse.radii):
-                    found = True
-                    ellipse.score += 1
-                    #ellipse.Average(centre, radii, pointIndices)
-            if (found == False):
-                accumulator.append(Ellipse(pointIndices, radii, centre))
-        if (len(accumulator) > 0):
-            ellipse = max(accumulator, key=lambda e:e.score)
-            ellipses.append(ellipse)
-            thresholded_grad_mag = np.delete(thresholded_grad_mag, ellipse.indices, 0)
-        
-    return [(e.centre[0], e.centre[1], e.radii[0], e.radii[1]) for e in ellipses]
+# TODO: Generalise this for ellipses
+def LargeClusterCircles(circles, cluster_radius):
+    clusters = []
+    print(circles)
+    while(len(circles) > 0):
+        average = list(circles[0])
+        average.append(0)
+        removed = [0]
+        for i in range(1, len(circles)):
+            average_coords = np.array(average[:2])
+            coords = circles[i][:2]
+            d2 = np.dot(average_coords - coords, average_coords - coords)
+            if (d2 < cluster_radius ** 2):
+                new_coords = ((average_coords * average[3]) + coords) / (average[3] + 1)
+                new_radius = ((average[2] * average[3]) + circles[i][2]) / (average[3] + 1)
+                average = [int(new_coords[0]), int(new_coords[1]), int(new_radius), average[3] + 1]
+                removed.append(i)
+        circles = np.delete(circles, removed, axis=0)
+        clusters.append(average[:3])
+        print(average[3])
+    print(clusters)
+    return clusters
 
 def test_hough_circles(image):
     frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    frame_gray = cv2.equalizeHist(frame_gray)
     magnitude, direction = sobel_information(frame_gray)
-    circles = hough_circles(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 10)
+    circles = hough_circles(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 6)
     for (y, x, r) in circles:
         image = cv2.circle(image, (x, y), r, (0, 0, 255), 1)
     cv2.imwrite("circles_detected.jpg", image)
@@ -331,8 +196,8 @@ def test_hough_ellipses(image):
     magnitude, direction = sobel_information(frame_gray)
     #ellipses = better_hough_ellipse(direction, thresholded_pixels(magnitude, 250), frame_gray.shape, 10)
     # ellipses = randomized_hough_ellipse(direction, thresholded_pixels(magnitude, 200))
-    min_radius = 45
-    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 240), frame_gray.shape, 12, (min_radius, 100))
+    min_radius = 30
+    ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 250), frame_gray.shape, 11, (min_radius, 100))
     height, width = frame_gray.shape
     centres = np.zeros((height + min_radius, width + min_radius))
     for (y, x, r_a, r_b) in ellipses:
@@ -364,7 +229,7 @@ def IoUScore(b0, b1):
 def ScorePredictions(predictions, groundtruths):
     scores = { "TP": 0, "FP": 0, "FN": 0, "F1": 0}
     truthLocated = np.full(len(groundtruths), False)
-    threshold = 0.2
+    threshold = 0.1
     for p in predictions:
         found = False
         for i in range(len(groundtruths)):
@@ -412,7 +277,16 @@ def PrettyPrintScore(scores, imageN):
     print("False Negatives | {:<10}".format(scores["FN"]))
     print("F1 Score        | {:.3f}".format(scores["F1"]))
 
-def detectAndDisplay(model, frame, truths, imageN):
+
+def DrawGroundTruth(frame, truths, imageN):
+    for i in range(len(truths[imageN])):
+        start_point = (truths[imageN][i][0], truths[imageN][i][1])
+        end_point = (truths[imageN][i][0] + truths[imageN][i][2], truths[imageN][i][1] + truths[imageN][i][3])
+        colour = (0, 0, 255)
+        thickness = 2
+        frame = cv2.rectangle(frame, start_point, end_point, colour, thickness)
+
+def ViolaJonesDetector(model, frame, truths, imageN):
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     frame_gray = cv2.equalizeHist(frame_gray)
 
@@ -426,14 +300,74 @@ def detectAndDisplay(model, frame, truths, imageN):
         thickness = 2
         frame = cv2.rectangle(frame, start_point, end_point, colour, thickness)
 
-    for i in range(len(truths[imageN])):
-        start_point = (truths[imageN][i][0], truths[imageN][i][1])
-        end_point = (truths[imageN][i][0] + truths[imageN][i][2], truths[imageN][i][1] + truths[imageN][i][3])
-        colour = (0, 0, 255)
-        thickness = 2
-        frame = cv2.rectangle(frame, start_point, end_point, colour, thickness)
-
+    DrawGroundTruth(frame, truths, imageN)
     scores = ScorePredictions(dartboards, truths[imageN])
+    PrettyPrintScore(scores, imageN)
+    return scores
+
+def combined_dectectors(image, model, truths, imageN, overlay=False, ellipse=False):
+    frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    frame_gray = cv2.equalizeHist(frame_gray)
+    magnitude, direction = sobel_information(frame_gray)
+    circles = hough_circles(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 11)
+    ellipses = []
+
+    if (ellipse):
+        min_radius = 30 # Remember to add min radius to each of the radii afterwards
+        ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 11, (min_radius, 100))
+
+    if (overlay):
+        overlayed = np.copy(image)
+        for (y, x, r, c) in circles:
+            overlayed = cv2.circle(overlayed, (x, y), r, (0, 0, 255), 1)
+        for (y, x, r_a, r_b, c) in ellipses:
+            overlayed = cv2.ellipse(overlayed, (x, y), (r_a, r_b), 0, 0, 360, (0, 0, 255), 1)
+        cv2.imwrite("circles_detected.jpg", overlayed)
+
+            
+    dartboards = model.detectMultiScale(frame_gray, scaleFactor=1.1, minNeighbors=8, flags=0, minSize=(30,30), maxSize=(300,300))
+
+    detections = []
+    # For each circle create bounding box and compute IoU score with viola jones detections
+
+    scores = np.zeros(len(dartboards))
+    circles_consumed = [[] for _ in range(len(dartboards))]
+    for c in range(len(circles)):
+        (y, x, r, confidence) = circles[c]
+        bbox = [x - r, y - r, 2 * r, 2 * r]
+        for i in range(len(dartboards)):
+            score = IoUScore(bbox, dartboards[i])
+            scores[i] += score
+            if (score > 0):
+                circles_consumed[i].append(c)
+    
+
+    for i in range(len(scores)):
+        if (scores[i] > 0.1):
+            detections.append(dartboards[i])
+            circles = [circles[c] for c in range(len(circles)) if c not in circles_consumed[i]]
+
+    for c in range(len(circles)):
+        (y, x, r, confidence) = circles[c]
+        if (confidence >= 30):
+            bbox = [x - r, y - r, 2 * r, 2 * r]
+            detections.append(bbox)
+    
+    for e in range(len(ellipses)):
+        (y, x, r_a, r_b, confidence) = ellipses[e]
+        if (confidence >= 150):
+            bbox = [x - r_a, y - r_b, 2 * r_a, 2 * r_b]
+            detections.append(bbox)
+
+    for d in detections:
+        start_point = (d[0], d[1])
+        end_point = (d[0] + d[2], d[1] + d[3])
+        colour = (255, 0, 0)
+        thickness = 2
+        image = cv2.rectangle(image, start_point, end_point, colour, thickness)
+    
+    DrawGroundTruth(image, truths, imageN)
+    scores = ScorePredictions(detections, truths[imageN])
     PrettyPrintScore(scores, imageN)
     return scores
 
@@ -450,7 +384,7 @@ def readGroundTruths(filename):
                 boxes[int(box[0])].append(boxTuple)
     return boxes
 
-def ClassifyMultiplePhotos(name_range, folder='Dartboard/', prefix='dart', ext='jpg'):
+def ClassifyMultiplePhotos(name_range, folder='Dartboard/', prefix='dart', ext='jpg', circles=False, ellipse=False):
     model = cv2.CascadeClassifier(cascade_name)
     ground_truths = readGroundTruths("Dartboard/groundtruths.txt")
     scores = []
@@ -461,11 +395,15 @@ def ClassifyMultiplePhotos(name_range, folder='Dartboard/', prefix='dart', ext='
             print('No such file')
             sys.exit(1)
         frame = cv2.imread(filename, 1)
-        scores.append(detectAndDisplay(model, frame, ground_truths, i))
+
+        if (circles):
+            scores.append(combined_dectectors(frame, model, ground_truths, i, ellipse=(True if i == 50 else False)))
+        else:
+            scores.append(ViolaJonesDetector(model, frame, ground_truths, i))
         cv2.imwrite(f"Detected/{prefix}{i}.{ext}", frame)
     PrettyPrintScores(scores)
         
-def ClassifySinglePhoto(filepath):
+def ClassifySinglePhoto(filepath, circles=True, overlay=False, ellipse=False):
     if (not os.path.isfile(filepath)) or (not os.path.isfile(cascade_name)):
         print('No such file')
         sys.exit(1)
@@ -481,15 +419,15 @@ def ClassifySinglePhoto(filepath):
     model = cv2.CascadeClassifier(cascade_name)
     ground_truths = readGroundTruths("Dartboard/groundtruths.txt")
     imageNo = int((filepath.split('dart')[1]).split('.jpg')[0])
-    detectAndDisplay(model, frame, ground_truths, imageNo)
+
+    if (circles):
+        combined_dectectors(frame, model, ground_truths, imageNo, overlay, ellipse)
+    else:
+        ViolaJonesDetector(model, frame, ground_truths, imageNo)
     cv2.imwrite(f"Detected/{filename}", frame)
 
 imageName = args.name
-if (args.name != "" and args.viola_jones):
-    ClassifySinglePhoto(imageName)
-elif (args.name != ""):
-    image = cv2.imread(imageName, 1)
-    test_hough_ellipses(image)
-    #test_hough_circles(image)
+if (args.name != ""):
+    ClassifySinglePhoto(imageName, True, True, True)
 else:
-    ClassifyMultiplePhotos((0, 15))
+    ClassifyMultiplePhotos((0, 15), circles=True)
