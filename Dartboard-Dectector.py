@@ -160,10 +160,66 @@ def hough_ellipse(grad_direction, thresholded_grad_mag, shape, T, radii_range):
         averages.append(average)
     return averages
 
+def AngleBetweenPoints(v0, v1, v2):
+    return (180 / math.pi) * np.arccos(np.dot(v1 - v0, v1 - v2) / (np.linalg.norm(v1 - v0) * np.linalg.norm(v1 - v2)))
+
+def TriangleHas18DegreeAngle(triangle, tolerance=10):
+    angles = []
+    angles.append(AngleBetweenPoints(triangle[0], triangle[1], triangle[2]))
+    angles.append(AngleBetweenPoints(triangle[1], triangle[2], triangle[0]))
+    angles.append(AngleBetweenPoints(triangle[2], triangle[0], triangle[1]))
+    for a in angles:
+        if (a < 18 + tolerance or a > 18 - tolerance):
+            return True
+    return False
+
+def DetectDartboardsFromTriangles(frame):
+    triangles = ContourPolygons(frame, 150)
+    
+    # Dartboards have 20 triangular segments, 360 / 20 = 18
+    # Get a list of triangles that have an angle of around 18 degrees
+    triangles = [np.array(t) for t in triangles if TriangleHas18DegreeAngle(np.array(t))]
+    centres = np.array([(t[0] + t[1] + t[2]) / 3 for t in triangles])
+
+    cluster_radius = 30
+    clusters = []
+    while (len(centres) > 0):
+        average = list(centres[0])
+        average.append(0)
+        removed = [0]
+        for i in range(1, len(centres)):
+            centre = np.array(centres[i])
+            av = np.array(average[:2])
+            d2 = np.dot(centre - av, centre - av)
+            if (d2 < cluster_radius ** 2):
+                new_average = (av * average[2] + centre) / (average[2] + 1)
+                average = [new_average[0], new_average[1], average[2] + 1]
+                removed.append(i)
+        centres = np.delete(centres, removed, axis=0)
+        clusters.append(average)
+    
+    clusters = [c for c in clusters if c[2] >= 3]
+    print(len(clusters))
+    return [[int(c[0] - cluster_radius), int(c[1] - cluster_radius), 2 * cluster_radius, 2 * cluster_radius] for c in clusters]
+
+def ContourPolygons(frame, T):
+    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, thresholded = cv2.threshold(frame_gray, T, 255, cv2.THRESH_BINARY)
+    _, contours, _ = cv2.findContours(thresholded, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    tris = []
+    contour_output = np.copy(frame)
+    for contour in contours:
+        if (cv2.contourArea(contour) > 10):
+            poly = cv2.approxPolyDP(contour, 0.05 * cv2.arcLength(contour, True), True)
+            if (len(poly) == 3):
+                cv2.drawContours(contour_output, [poly], 0, (0, 0, 255), 2)
+                tris.append([poly[0][0], poly[1][0], poly[2][0]])
+    cv2.imwrite("countour_test.jpg", contour_output)
+    return tris
+
 # TODO: Generalise this for ellipses
 def LargeClusterCircles(circles, cluster_radius):
     clusters = []
-    print(circles)
     while(len(circles) > 0):
         average = list(circles[0])
         average.append(0)
@@ -305,15 +361,35 @@ def ViolaJonesDetector(model, frame, truths, imageN):
     PrettyPrintScore(scores, imageN)
     return scores
 
-def combined_dectectors(image, model, truths, imageN, overlay=False, ellipse=False):
+def CollateBoundingBoxes(bboxs):
+    output = []
+    bboxs = np.array([b for b in bboxs if b[2] * b[3] > 20])
+    while (len(bboxs) > 0):
+        current = list(bboxs[0])
+        current.append(0)
+        removed = [0]
+        for i in range(1, len(bboxs)):
+            current_bbox = np.array(current[:4])
+            comparing_bbox = bboxs[i]
+            iou = IoUScore(current_bbox, comparing_bbox)
+            if (iou > 0.05):
+                new_bbox = ((comparing_bbox * current[4]) + comparing_bbox) / (current[4] + 1)
+                current = [int(new_bbox[0]), int(new_bbox[1]), int(new_bbox[2]), int(new_bbox[3]), current[4] + 1]
+                removed.append(i)
+        bboxs = np.delete(bboxs, removed, axis=0)
+        output.append(current[:4])
+    return output
+
+def combined_dectectors(image, model, truths, imageN, overlay=False):
     frame_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     frame_gray = cv2.equalizeHist(frame_gray)
     magnitude, direction = sobel_information(frame_gray)
     circles = hough_circles(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 11)
     ellipses = []
 
-    if (ellipse):
+    if (len([c for c in circles if c[3] > 40]) == 0 and len(circles) > 0):
         min_radius = 30 # Remember to add min radius to each of the radii afterwards
+        print("Ellipse Detecting")
         ellipses = hough_ellipse(direction, thresholded_pixels(magnitude, 200), frame_gray.shape, 11, (min_radius, 100))
 
     if (overlay):
@@ -359,10 +435,12 @@ def combined_dectectors(image, model, truths, imageN, overlay=False, ellipse=Fal
             bbox = [x - r_a, y - r_b, 2 * r_a, 2 * r_b]
             detections.append(bbox)
 
+    detections.extend(DetectDartboardsFromTriangles(image))
+    detections = CollateBoundingBoxes(np.array(detections))
     for d in detections:
         start_point = (d[0], d[1])
         end_point = (d[0] + d[2], d[1] + d[3])
-        colour = (255, 0, 0)
+        colour = (0, 255, 0)
         thickness = 2
         image = cv2.rectangle(image, start_point, end_point, colour, thickness)
     
@@ -397,13 +475,24 @@ def ClassifyMultiplePhotos(name_range, folder='Dartboard/', prefix='dart', ext='
         frame = cv2.imread(filename, 1)
 
         if (circles):
-            scores.append(combined_dectectors(frame, model, ground_truths, i, ellipse=(True if i == 50 else False)))
+            scores.append(combined_dectectors(frame, model, ground_truths, i))
         else:
             scores.append(ViolaJonesDetector(model, frame, ground_truths, i))
         cv2.imwrite(f"Detected/{prefix}{i}.{ext}", frame)
     PrettyPrintScores(scores)
-        
-def ClassifySinglePhoto(filepath, circles=True, overlay=False, ellipse=False):
+
+def TestContour(filepath):
+    frame = cv2.imread(filepath, 1)
+    dartboards = DetectDartboardsFromTriangles(frame)
+    for d in dartboards:
+        start_point = (d[0], d[1])
+        end_point = (d[0] + d[2], d[1] + d[3])
+        colour = (0, 255, 0)
+        thickness = 2
+        frame = cv2.rectangle(frame, start_point, end_point, colour, thickness)
+    cv2.imwrite("countour_test.jpg", frame)
+
+def ClassifySinglePhoto(filepath, circles=True, overlay=False):
     if (not os.path.isfile(filepath)) or (not os.path.isfile(cascade_name)):
         print('No such file')
         sys.exit(1)
@@ -421,13 +510,14 @@ def ClassifySinglePhoto(filepath, circles=True, overlay=False, ellipse=False):
     imageNo = int((filepath.split('dart')[1]).split('.jpg')[0])
 
     if (circles):
-        combined_dectectors(frame, model, ground_truths, imageNo, overlay, ellipse)
+        combined_dectectors(frame, model, ground_truths, imageNo, overlay)
     else:
         ViolaJonesDetector(model, frame, ground_truths, imageNo)
     cv2.imwrite(f"Detected/{filename}", frame)
 
 imageName = args.name
 if (args.name != ""):
-    ClassifySinglePhoto(imageName, True, True, True)
+    #TestContour(imageName)
+    ClassifySinglePhoto(imageName, True, True)
 else:
     ClassifyMultiplePhotos((0, 15), circles=True)
